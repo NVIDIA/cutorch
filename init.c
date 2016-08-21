@@ -698,24 +698,22 @@ static int cutorch_getMemoryUsage(lua_State *L) {
   size_t freeBytes = 0;
   size_t totalBytes = 0;
   int curDevice;
+  THCState *state = cutorch_getstate(L);
+
   THCudaCheck(cudaGetDevice(&curDevice));
 
   int device = luaL_optint(L, 1, -10);
-  if (device == -10) { /* no argument passed, current device mem usage */
-#ifdef USE_CNMEM
-    THCnmemCheck(cnmemMemGetInfo(&freeBytes, &totalBytes, NULL));
-#else
-    THCudaCheck(cudaMemGetInfo(&freeBytes, &totalBytes));
-#endif
-  } else { /* argument was given, particular device's memory usage */
+  if (device > 0)
     THCudaCheck(cudaSetDevice(device-1)); /* zero indexed */
-#ifdef USE_CNMEM
-    THCnmemCheck(cnmemMemGetInfo(&freeBytes, &totalBytes, NULL));
-#else
+
+  switch (state->memoryPoolMode) {
+  case THC_GPU_MEMORY_POOL_CNMEM:
+    THCudaCheck(cnmemMemGetInfo(&freeBytes, &totalBytes, NULL));
+    break;
+  default:
     THCudaCheck(cudaMemGetInfo(&freeBytes, &totalBytes));
-#endif
-    THCudaCheck(cudaSetDevice(curDevice));
   }
+  THCudaCheck(cudaSetDevice(curDevice));
   lua_pushnumber(L, freeBytes);
   lua_pushnumber(L, totalBytes);
   return 2;
@@ -906,6 +904,21 @@ static int cutorch_setHeapTracking(lua_State *L)
   return 0;
 }
 
+static int cutorch_setMemoryPoolMode(lua_State *L)
+{
+  THCState *state = cutorch_getstate(L);
+  int mode = luaL_checknumber(L,1);
+  THCudaSetMemoryPoolMode(state, mode);
+  return 0 ;
+}
+
+static int cutorch_getMemoryPoolMode(lua_State *L)
+{
+  THCState *state = cutorch_getstate(L);
+  lua_pushnumber(L, state->memoryPoolMode);
+  return 1;
+}
+
 static int cutorch_shutdown(lua_State *L)
 {
   THCState **state = (THCState **) lua_topointer(L, 1);
@@ -950,6 +963,8 @@ static const struct luaL_Reg cutorch_stuff__ [] = {
   {"setRNGState", cutorch_setRNGState},
   {"getState", cutorch_getState},
   {"setHeapTracking", cutorch_setHeapTracking},
+  {"setMemoryPoolMode", cutorch_setMemoryPoolMode},
+  {"getMemoryPoolMode", cutorch_getMemoryPoolMode},
   {NULL, NULL}
 };
 
@@ -1034,9 +1049,10 @@ int luaopen_libcutorch(lua_State *L)
 
   /* store gpu driver version in field */
   int driverVersion;
+
   THCudaCheck(cudaDriverGetVersion(&driverVersion));
   lua_pushinteger(L, driverVersion);
-  lua_setfield(L, -2, "driverVersion");  
+  lua_setfield(L, -2, "driverVersion");
 
   /* when cutorch goes out of scope, we need to make sure THCState is properly
      shut down (so that memory doesn not leak. Since _state is a lightuserdata

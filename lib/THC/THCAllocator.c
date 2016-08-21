@@ -1,5 +1,7 @@
 #include "THCAllocator.h"
 
+#include "cnmem.h"
+
 static void *THCudaHostAllocator_alloc(void* ctx, long size) {
   void* ptr;
 

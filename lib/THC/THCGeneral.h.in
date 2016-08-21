@@ -6,14 +6,11 @@
 #undef log1p
 
 #cmakedefine USE_MAGMA
-#cmakedefine USE_CNMEM
 
 #include "cuda.h"
 #include "cuda_runtime.h"
 #include "cublas_v2.h"
-#ifdef USE_CNMEM
 #include "cnmem.h"
-#endif
 
 #ifdef __cplusplus
 # define THC_EXTERNC extern "C"
@@ -42,11 +39,13 @@
 
 struct THCRNGState;  /* Random number generator state. */
 
-#ifdef USE_CNMEM
-typedef cnmemStatus_t memoryStatus_t;
-#else
+typedef enum
+{
+  THC_GPU_MEMORY_POOL_NONE = 0,
+  THC_GPU_MEMORY_POOL_CNMEM = 1
+} THCGPUMemoryPoolMode;
+
 typedef cudaError_t memoryStatus_t;
-#endif
 
 typedef struct _THCCudaResourcesPerDevice {
   cudaStream_t* streams;
@@ -97,6 +96,11 @@ typedef struct THCState
      Note that p2p access must exist and be enabled for the pair of
      GPUs in question. */
   int p2pKernelAccessEnabled;
+
+  /* enum determines if we use memory pool */
+  int memoryPoolMode;
+  /* how much of GPU memory we are allowed to allocate*/
+  long memoryPoolSizeLimit;
 
   void (*cutorchGCFunction)(void *data);
   void *cutorchGCData;
@@ -153,20 +157,14 @@ THC_API void* THCState_getDeviceScratchSpace(THCState* state, int device, int st
 THC_API size_t THCState_getCurrentDeviceScratchSpaceSize(THCState* state);
 THC_API size_t THCState_getDeviceScratchSpaceSize(THCState* state, int device);
 
-#define THCudaCheck(err)  __THCudaCheck(err, __FILE__, __LINE__)
+#define THCudaCheck(err)    __THCudaCheck(err, __FILE__, __LINE__)
 #define THCublasCheck(err)  __THCublasCheck(err,  __FILE__, __LINE__)
-#ifdef USE_CNMEM
-#define THMemoryCheck(err)  __THCnmemCheck(err,  __FILE__, __LINE__)
-#define THCnmemCheck(err)  __THCnmemCheck(err,  __FILE__, __LINE__)
-#else
 #define THMemoryCheck(err)  __THCudaCheck(err, __FILE__, __LINE__)
-#endif
 
 THC_API void __THCudaCheck(cudaError_t err, const char *file, const int line);
 THC_API void __THCublasCheck(cublasStatus_t status, const char *file, const int line);
-#ifdef USE_CNMEM
-THC_API void __THCnmemCheck(cnmemStatus_t status, const char *file, const int line);
-#endif
+
+THC_API cudaError_t cnmem2cuda(cnmemStatus_t err);
 
 THC_API memoryStatus_t THCudaMalloc(THCState *state, void **ptr, size_t size);
 THC_API memoryStatus_t THCudaFree(THCState *state, void *ptr);
@@ -174,5 +172,7 @@ THC_API void THCSetGCHandler(THCState *state,
                              void (*torchGCHandlerFunction)(void *data),
                              void *data );
 THC_API void THCHeapUpdate(THCState *state, long size);
+
+THC_API void THCudaSetMemoryPoolMode(THCState *state, int mode);
 
 #endif

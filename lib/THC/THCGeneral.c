@@ -3,13 +3,52 @@
 #include "THCTensorRandom.h"
 #include "THCBlas.h"
 #include "THCAllocator.h"
+#include "cnmem.h"
+
 #include <stdlib.h>
+
 
 /* Size of scratch space available in global memory per each SM + stream */
 #define GLOBAL_SCRATCH_SPACE_PER_SM_STREAM 4 * sizeof(float)
 
 THCCudaResourcesPerDevice* THCState_getDeviceResourcePtr(
   THCState *state, int device);
+
+cudaError_t cnmem2cuda(cnmemStatus_t err) {
+  switch (err) {
+  case CNMEM_STATUS_SUCCESS:
+    return cudaSuccess;
+  case CNMEM_STATUS_OUT_OF_MEMORY:
+    return cudaErrorMemoryAllocation;
+  case CNMEM_STATUS_NOT_INITIALIZED:
+    return cudaErrorInitializationError;
+  case CNMEM_STATUS_CUDA_ERROR:
+    return cudaGetLastError();
+  default:
+    return cudaErrorUnknown;
+  }
+}
+
+
+static void THC_cnmem_init(THCState* state) {
+  const char* limit = getenv("CUTORCH_POOL_SIZE");
+  state->memoryPoolSizeLimit = limit ? atof(limit) : 0.95;
+
+  cnmemDevice_t devices[state->numDevices];
+  for (int i = 0; i < state->numDevices ; ++i) {
+    size_t free_mem, total_mem;
+    cudaSetDevice(i);
+    devices[i].device = i;
+    cudaMemGetInfo(&free_mem, &total_mem);
+    devices[i].size = free_mem * state->memoryPoolSizeLimit;
+    devices[i].numStreams = 0;
+    devices[i].streams = NULL;
+  }
+  THCudaCheck(cnmem2cuda(cnmemInit(state->numDevices, devices, CNMEM_FLAGS_DEFAULT)));
+
+}
+/* should probably go in some .h */
+static const char* MEMORY_POOL_ENV_KEY = "CUTORCH_GPU_MEMORY_POOL_MODE";
 
 void THCudaInit(THCState* state)
 {
@@ -23,21 +62,6 @@ void THCudaInit(THCState* state)
   THCudaCheck(cudaGetDevice(&device));
 
   state->rngState = (THCRNGState*)malloc(sizeof(THCRNGState));
-
-#ifdef USE_CNMEM
-  cnmemDevice_t devices[count];
-  double multiplier = (getenv("CUTORCH_CNMEM")) ? (atof(getenv("CUTORCH_CNMEM"))) : (0.95);
-  for (int i = 0; i < count; ++i) {
-    devices[i].device = i;
-    size_t free_mem, used_mem;
-    cudaMemGetInfo(&free_mem, &used_mem);
-
-    devices[i].size = free_mem * multiplier;
-    devices[i].numStreams = 0;
-    devices[i].streams = NULL;
-  }
-  THCnmemCheck(cnmemInit(count, devices, CNMEM_FLAGS_DEFAULT));
-#endif
 
   THCRandom_init(state, count, device);
 
@@ -91,7 +115,10 @@ void THCudaInit(THCState* state)
   THCState_reserveBlasHandles(state, 1);
   state->currentPerDeviceBlasHandle = 1;
   state->currentBlasHandle = THCState_getDeviceBlasHandle(state, device, 1);
-
+  state->memoryPoolMode = THC_GPU_MEMORY_POOL_NONE;
+  const char* poolMode = getenv(MEMORY_POOL_ENV_KEY);
+  if (poolMode)
+    THCudaSetMemoryPoolMode(state, atoi(poolMode));
   state->heapSoftmax = 3e8; // 300MB, adjusted upward dynamically
   state->heapDelta = 0;
 }
@@ -139,11 +166,31 @@ void THCudaShutdown(THCState* state)
     free(state->resourcesPerDevice[dev].devScratchSpacePerStream);
   }
   free(state->resourcesPerDevice);
-#ifdef USE_CNMEM
-  THCnmemCheck(cnmemFinalize());
-#endif
-
+  if (state->memoryPoolMode != THC_GPU_MEMORY_POOL_NONE)
+    THCudaSetMemoryPoolMode(state,THC_GPU_MEMORY_POOL_NONE);
   THCudaCheck(cudaSetDevice(prevDev));
+}
+
+void THCudaSetMemoryPoolMode(THCState *state, int mode)
+{
+  if (state->memoryPoolMode != mode) {
+    switch (state->memoryPoolMode) {
+    case THC_GPU_MEMORY_POOL_CNMEM:
+      cnmemFinalize();
+      break;
+    default:
+      break;
+    }
+    state->memoryPoolMode = THC_GPU_MEMORY_POOL_NONE;
+    switch (mode) {
+    case THC_GPU_MEMORY_POOL_CNMEM:
+      THC_cnmem_init(state);
+      state->memoryPoolMode = mode;
+      break;
+    default:
+      break;
+    }
+  }
 }
 
 void THCudaEnablePeerToPeerAccess(THCState* state)
@@ -566,22 +613,6 @@ void __THCudaCheck(cudaError_t err, const char *file, const int line)
   }
 }
 
-#ifdef USE_CNMEM
-void __THCnmemCheck(cnmemStatus_t status, const char *file, const int line)
-{
-  if(status != CNMEM_STATUS_SUCCESS)
-  {
-    static int alreadyFailed = 0;
-    if(!alreadyFailed) {
-      fprintf(stderr, "THMemoryCheck FAIL file=%s line=%i error=%i : %s\n", file, line, status, cnmemGetErrorString(status));
-      alreadyFailed = 1;
-    }
-    _THError(file, line, "cnmem error (%d) : %s", status,
-             cnmemGetErrorString(status));
-  }
-}
-#endif
-
 void __THCublasCheck(cublasStatus_t status, const char *file, const int line)
 {
   if(status != CUBLAS_STATUS_SUCCESS)
@@ -638,33 +669,41 @@ void THCSetGCHandler(THCState *state, void (*cutorchGCFunction_)(void *data), vo
   state->cutorchGCData = data;
 }
 
+
+memoryStatus_t THCudaTryMalloc(THCState *state, void** ptr, size_t size)
+{
+  cudaError_t err = cudaSuccess;
+  switch (state->memoryPoolMode) {
+  case THC_GPU_MEMORY_POOL_CNMEM:
+    err = cnmem2cuda(cnmemMalloc(ptr, size, NULL));
+    break;
+  default:
+    err = cudaMalloc(ptr, size);
+  }
+  return err;
+}
+
 memoryStatus_t THCudaMalloc(THCState *state, void** ptr, size_t size)
 {
-  THCudaCheck(cudaGetLastError());
-#ifdef USE_CNMEM
-  cnmemStatus_t err = cnmemMalloc(ptr, size, NULL);
-#else
-  cudaError_t err = cudaMalloc(ptr, size);
-#endif
-  if (state->cutorchGCFunction != NULL && err != 0) {
+  memoryStatus_t err = THCudaTryMalloc(state, ptr, size);
+  if (state->cutorchGCFunction != NULL && err != cudaSuccess) {
     cudaGetLastError(); // reset OOM error
     (state->cutorchGCFunction)(state->cutorchGCData);
-#ifdef USE_CNMEM
-    err = cnmemMalloc(ptr, size, NULL);
-#else
-    err = cudaMalloc(ptr, size);
-#endif
+    err = THCudaTryMalloc(state, ptr, size);
   }
   return err;
 }
 
 memoryStatus_t THCudaFree(THCState *state, void *ptr)
 {
-#ifdef USE_CNMEM
-  cnmemStatus_t err = cnmemFree(ptr, NULL);
-#else
-  cudaError_t err = cudaFree(ptr);
-#endif
+  cudaError_t err = cudaSuccess;
+  switch (state->memoryPoolMode) {
+  case THC_GPU_MEMORY_POOL_CNMEM:
+    err = cnmemFree(ptr, NULL);
+    break;
+  default:
+    err = cudaFree(ptr);
+  }
   return err;
 }
 

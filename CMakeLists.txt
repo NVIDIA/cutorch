@@ -18,6 +18,7 @@ ADD_SUBDIRECTORY(lib)
 INCLUDE_DIRECTORIES(BEFORE "${CMAKE_CURRENT_BINARY_DIR}/lib/THC")
 INCLUDE_DIRECTORIES("${CMAKE_CURRENT_SOURCE_DIR}/lib/THC")
 INCLUDE_DIRECTORIES("${CMAKE_CURRENT_SOURCE_DIR}/torch")
+INCLUDE_DIRECTORIES("${CMAKE_CURRENT_SOURCE_DIR}/lib/cnmem/include")
 
 SET(src Storage.c init.c Tensor.c TensorMath.c TensorOperator.c torch/utils.c)
 SET(luasrc init.lua Tensor.lua FFI.lua test/test.lua)
@@ -25,7 +26,7 @@ SET(luasrc init.lua Tensor.lua FFI.lua test/test.lua)
 ADD_TORCH_WRAP(cudatensormathwrap TensorMath.lua)
 
 ADD_TORCH_PACKAGE(cutorch "${src}" "${luasrc}")
-TARGET_LINK_LIBRARIES(cutorch luaT THC)
+TARGET_LINK_LIBRARIES(cutorch luaT THC cnmem)
 
 IF(LUALIB)
   TARGET_LINK_LIBRARIES(cutorch ${LUALIB})
