@@ -21,6 +21,7 @@ endif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 
 INCLUDE_DIRECTORIES(${CUDA_INCLUDE_DIRS})
 INCLUDE_DIRECTORIES("${CUDA_SDK_ROOT_DIR}/common/inc")
+INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR})
 INCLUDE_DIRECTORIES("../cnmem/include")
 
 IF(MAGMA_FOUND)
@@ -97,7 +98,10 @@ CONFIGURE_FILE(THCGeneral.h.in "${CMAKE_CURRENT_BINARY_DIR}/THCGeneral.h")
 
 SET(CMAKE_C_FLAGS "-std=c99 ${CMAKE_C_FLAGS}")
 SET(src
-    THCGeneral.c THCAllocator.c THCStorage.c THCStorageCopy.c THCTensor.c THCTensorCopy.c)
+    THCGeneral.c
+    THCAllocator.c THCMemory.c
+    THCStorage.c THCStorageCopy.c
+    THCTensor.c THCTensorCopy.c)
 
 SET(src-cuda
   THCReduceApplyUtils.cu
@@ -177,6 +181,7 @@ INSTALL(FILES
           THCDeviceTensorUtils-inl.cuh
           THCGenerateAllTypes.h
           THCHalf.h
+          THCMemory.h
           THCNumerics.cuh
           THCTensorInfo.cuh
           THCTensorTypeUtils.cuh

@@ -4,6 +4,7 @@
 #include "THCTensorCopy.h"
 #include "THCTensorMath.h"
 #include "THCReduceApplyUtils.cuh"
+#include "THCMemory.h"
 
 #include <thrust/functional.h>
 #include <curand.h>

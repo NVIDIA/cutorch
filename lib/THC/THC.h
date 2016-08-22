@@ -3,6 +3,7 @@
 
 #include "THCGeneral.h"
 #include "THCAllocator.h"
+#include "THCMemory.h"
 #include "THCBlas.h"
 #include "THCStorage.h"
 #include "THCStorageCopy.h"

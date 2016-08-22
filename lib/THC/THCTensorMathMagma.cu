@@ -1,6 +1,8 @@
 #include "THCGeneral.h"
 #include "THCTensorMath.h"
 #include "THCTensorCopy.h"
+#include "THCMemory.h"
+
 #include <algorithm>
 
 #ifdef USE_MAGMA

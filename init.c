@@ -697,23 +697,9 @@ static int cutorch_setKernelPeerToPeerAccess(lua_State *L)
 static int cutorch_getMemoryUsage(lua_State *L) {
   size_t freeBytes = 0;
   size_t totalBytes = 0;
-  int curDevice;
   THCState *state = cutorch_getstate(L);
-
-  THCudaCheck(cudaGetDevice(&curDevice));
-
   int device = luaL_optint(L, 1, -10);
-  if (device > 0)
-    THCudaCheck(cudaSetDevice(device-1)); /* zero indexed */
-
-  switch (state->memoryPoolMode) {
-  case THC_GPU_MEMORY_POOL_CNMEM:
-    THCudaCheck(cnmemMemGetInfo(&freeBytes, &totalBytes, NULL));
-    break;
-  default:
-    THCudaCheck(cudaMemGetInfo(&freeBytes, &totalBytes));
-  }
-  THCudaCheck(cudaSetDevice(curDevice));
+  THCudaMemoryGetInfo(state, device-1, &freeBytes, &totalBytes); /* zero indexed */
   lua_pushnumber(L, freeBytes);
   lua_pushnumber(L, totalBytes);
   return 2;
@@ -904,19 +890,45 @@ static int cutorch_setHeapTracking(lua_State *L)
   return 0;
 }
 
-static int cutorch_setMemoryPoolMode(lua_State *L)
+static int cutorch_deactivateMemoryPool(lua_State *L)
 {
   THCState *state = cutorch_getstate(L);
-  int mode = luaL_checknumber(L,1);
-  THCudaSetMemoryPoolMode(state, mode);
-  return 0 ;
+  THCudaMemoryPoolActivate(state, 0);
+  return 0;
 }
 
-static int cutorch_getMemoryPoolMode(lua_State *L)
+static int cutorch_activateMemoryPool(lua_State *L)
+{
+  THCState *state = cutorch_getstate(L);
+  int mode = luaL_optint(L, 1, 1);
+  int percent = luaL_optint(L,2, -1);
+  if (percent>0)
+    state->memoryPoolPercent = percent;
+  THCudaMemoryPoolActivate(state, mode);
+  return 0;
+}
+
+static int cutorch_getMemoryPoolSettings(lua_State *L)
 {
   THCState *state = cutorch_getstate(L);
   lua_pushnumber(L, state->memoryPoolMode);
+  lua_pushnumber(L, state->memoryPoolPercent);
+  return 2;
+}
+
+static int cutorch_getVerbose(lua_State *L)
+{
+  THCState *state = cutorch_getstate(L);
+  lua_pushnumber(L, state->verbose);
   return 1;
+}
+
+static int cutorch_setVerbose(lua_State *L)
+{
+  THCState *state = cutorch_getstate(L);
+  int verbose = luaL_optint(L, 1, 1);
+  state->verbose = verbose;
+  return 0;
 }
 
 static int cutorch_shutdown(lua_State *L)
@@ -962,9 +974,12 @@ static const struct luaL_Reg cutorch_stuff__ [] = {
   {"getRNGState", cutorch_getRNGState},
   {"setRNGState", cutorch_setRNGState},
   {"getState", cutorch_getState},
+  {"getVerbose", cutorch_getVerbose},
+  {"setVerbose", cutorch_setVerbose},
   {"setHeapTracking", cutorch_setHeapTracking},
-  {"setMemoryPoolMode", cutorch_setMemoryPoolMode},
-  {"getMemoryPoolMode", cutorch_getMemoryPoolMode},
+  {"activateMemoryPool", cutorch_activateMemoryPool},
+  {"deactivateMemoryPool", cutorch_deactivateMemoryPool},
+  {"getMemoryPoolSettings", cutorch_getMemoryPoolSettings},
   {NULL, NULL}
 };
 

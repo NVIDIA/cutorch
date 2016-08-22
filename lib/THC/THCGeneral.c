@@ -3,52 +3,12 @@
 #include "THCTensorRandom.h"
 #include "THCBlas.h"
 #include "THCAllocator.h"
-#include "cnmem.h"
+#include "THCMemory.h"
 
 #include <stdlib.h>
 
-
 /* Size of scratch space available in global memory per each SM + stream */
 #define GLOBAL_SCRATCH_SPACE_PER_SM_STREAM 4 * sizeof(float)
-
-THCCudaResourcesPerDevice* THCState_getDeviceResourcePtr(
-  THCState *state, int device);
-
-cudaError_t cnmem2cuda(cnmemStatus_t err) {
-  switch (err) {
-  case CNMEM_STATUS_SUCCESS:
-    return cudaSuccess;
-  case CNMEM_STATUS_OUT_OF_MEMORY:
-    return cudaErrorMemoryAllocation;
-  case CNMEM_STATUS_NOT_INITIALIZED:
-    return cudaErrorInitializationError;
-  case CNMEM_STATUS_CUDA_ERROR:
-    return cudaGetLastError();
-  default:
-    return cudaErrorUnknown;
-  }
-}
-
-
-static void THC_cnmem_init(THCState* state) {
-  const char* limit = getenv("CUTORCH_POOL_SIZE");
-  state->memoryPoolSizeLimit = limit ? atof(limit) : 0.95;
-
-  cnmemDevice_t devices[state->numDevices];
-  for (int i = 0; i < state->numDevices ; ++i) {
-    size_t free_mem, total_mem;
-    cudaSetDevice(i);
-    devices[i].device = i;
-    cudaMemGetInfo(&free_mem, &total_mem);
-    devices[i].size = free_mem * state->memoryPoolSizeLimit;
-    devices[i].numStreams = 0;
-    devices[i].streams = NULL;
-  }
-  THCudaCheck(cnmem2cuda(cnmemInit(state->numDevices, devices, CNMEM_FLAGS_DEFAULT)));
-
-}
-/* should probably go in some .h */
-static const char* MEMORY_POOL_ENV_KEY = "CUTORCH_GPU_MEMORY_POOL_MODE";
 
 void THCudaInit(THCState* state)
 {
@@ -97,8 +57,8 @@ void THCudaInit(THCState* state)
 
     /* Allocate scratch space for each stream */
     res->devScratchSpacePerStream = (void**) malloc(sizeof(void*));
-    THMemoryCheck(THCudaMalloc(state, &res->devScratchSpacePerStream[0],
-                               sizePerStream));
+    THCudaCheck(cudaMalloc(&res->devScratchSpacePerStream[0],
+                           sizePerStream));
   }
 
   /* Restore to previous device */
@@ -108,6 +68,8 @@ void THCudaInit(THCState* state)
   state->currentPerDeviceStream = 0;
   state->currentStream = NULL;
 
+  THCudaMemoryInit(state);
+
   /* There is no such thing as a default cublas handle.
      To maintain consistency with streams API, handle 0 is always NULL and we
      start counting at 1
@@ -115,10 +77,6 @@ void THCudaInit(THCState* state)
   THCState_reserveBlasHandles(state, 1);
   state->currentPerDeviceBlasHandle = 1;
   state->currentBlasHandle = THCState_getDeviceBlasHandle(state, device, 1);
-  state->memoryPoolMode = THC_GPU_MEMORY_POOL_NONE;
-  const char* poolMode = getenv(MEMORY_POOL_ENV_KEY);
-  if (poolMode)
-    THCudaSetMemoryPoolMode(state, atoi(poolMode));
   state->heapSoftmax = 3e8; // 300MB, adjusted upward dynamically
   state->heapDelta = 0;
 }
@@ -127,6 +85,7 @@ void THCudaShutdown(THCState* state)
 {
   THCRandom_shutdown(state);
   THCAllocator_shutdown(state);
+  THCudaMemoryPoolDeactivate(state);
 
   free(state->rngState);
   free(state->deviceProperties);
@@ -158,7 +117,7 @@ void THCudaShutdown(THCState* state)
     /* Free per-stream scratch space; starts at 0 because there is space for
        the default stream as well*/
     for (int stream = 0; stream <= state->numUserStreams; ++stream) {
-      THMemoryCheck(THCudaFree(state, THCState_getDeviceScratchSpace(state, dev, stream)));
+      THMemoryCheck(cudaFree(THCState_getDeviceScratchSpace(state, dev, stream)));
     }
 
     free(state->resourcesPerDevice[dev].streams);
@@ -166,31 +125,7 @@ void THCudaShutdown(THCState* state)
     free(state->resourcesPerDevice[dev].devScratchSpacePerStream);
   }
   free(state->resourcesPerDevice);
-  if (state->memoryPoolMode != THC_GPU_MEMORY_POOL_NONE)
-    THCudaSetMemoryPoolMode(state,THC_GPU_MEMORY_POOL_NONE);
   THCudaCheck(cudaSetDevice(prevDev));
-}
-
-void THCudaSetMemoryPoolMode(THCState *state, int mode)
-{
-  if (state->memoryPoolMode != mode) {
-    switch (state->memoryPoolMode) {
-    case THC_GPU_MEMORY_POOL_CNMEM:
-      cnmemFinalize();
-      break;
-    default:
-      break;
-    }
-    state->memoryPoolMode = THC_GPU_MEMORY_POOL_NONE;
-    switch (mode) {
-    case THC_GPU_MEMORY_POOL_CNMEM:
-      THC_cnmem_init(state);
-      state->memoryPoolMode = mode;
-      break;
-    default:
-      break;
-    }
-  }
 }
 
 void THCudaEnablePeerToPeerAccess(THCState* state)
@@ -364,6 +299,8 @@ void THCState_reserveStreams(THCState* state, int numStreams, int nonBlocking)
       THCudaCheck(cudaStreamCreateWithFlags(newStreams + stream, flags));
       newScratchSpace[stream] = NULL;
       THMemoryCheck(THCudaMalloc(state, &newScratchSpace[stream], scratchSpaceSize));
+      /* if memory pool is already active, register new stream with it */
+      THCudaMemoryPoolRegisterStream(state, newStreams[stream]);
     }
 
     THCCudaResourcesPerDevice* res = THCState_getDeviceResourcePtr(state, dev);
@@ -608,7 +545,9 @@ void __THCudaCheck(cudaError_t err, const char *file, const int line)
       fprintf(stderr, "THCudaCheck FAIL file=%s line=%i error=%i : %s\n", file, line, err, cudaGetErrorString(err));
       alreadyFailed = 1;
     }
-    _THError(file, line, "cuda runtime error (%d) : %s", err,
+    /* clear the error */
+    cudaError_t lastErr = cudaGetLastError();
+    _THError(file, line, "cuda runtime error (%d)(last: %d) : %s", err, lastErr,
              cudaGetErrorString(err));
   }
 }
@@ -655,91 +594,6 @@ void __THCublasCheck(cublasStatus_t status, const char *file, const int line)
     }
 
     _THError(file, line, "cublas runtime error : %s", errmsg);
-  }
-}
-
-static long heapSize = 0; // not thread-local
-static const long heapMaxDelta = 1e6;
-static const double heapSoftmaxGrowthThresh = 0.8; // grow softmax if >80% max after GC
-static const double heapSoftmaxGrowthFactor = 1.4; // grow softmax by 40%
-
-void THCSetGCHandler(THCState *state, void (*cutorchGCFunction_)(void *data), void *data )
-{
-  state->cutorchGCFunction = cutorchGCFunction_;
-  state->cutorchGCData = data;
-}
-
-
-memoryStatus_t THCudaTryMalloc(THCState *state, void** ptr, size_t size)
-{
-  cudaError_t err = cudaSuccess;
-  switch (state->memoryPoolMode) {
-  case THC_GPU_MEMORY_POOL_CNMEM:
-    err = cnmem2cuda(cnmemMalloc(ptr, size, NULL));
-    break;
-  default:
-    err = cudaMalloc(ptr, size);
-  }
-  return err;
-}
-
-memoryStatus_t THCudaMalloc(THCState *state, void** ptr, size_t size)
-{
-  memoryStatus_t err = THCudaTryMalloc(state, ptr, size);
-  if (state->cutorchGCFunction != NULL && err != cudaSuccess) {
-    cudaGetLastError(); // reset OOM error
-    (state->cutorchGCFunction)(state->cutorchGCData);
-    err = THCudaTryMalloc(state, ptr, size);
-  }
-  return err;
-}
-
-memoryStatus_t THCudaFree(THCState *state, void *ptr)
-{
-  cudaError_t err = cudaSuccess;
-  switch (state->memoryPoolMode) {
-  case THC_GPU_MEMORY_POOL_CNMEM:
-    err = cnmemFree(ptr, NULL);
-    break;
-  default:
-    err = cudaFree(ptr);
-  }
-  return err;
-}
-
-static long applyHeapDelta(THCState *state) {
-  long newHeapSize = THAtomicAddLong(&heapSize, state->heapDelta) + state->heapDelta;
-  state->heapDelta = 0;
-  return newHeapSize;
-}
-
-// Here we maintain a dynamic softmax threshold for THC-allocated storages.
-// When THC heap size goes above this softmax, the GC hook is triggered.
-// If heap size is above 80% of the softmax after GC, then the softmax is
-// increased.
-static void maybeTriggerGC(THCState *state, long curHeapSize) {
-  if (state->cutorchGCFunction != NULL && curHeapSize > state->heapSoftmax) {
-    (state->cutorchGCFunction)(state->cutorchGCData);
-
-    // ensure heapSize is accurate before updating heapSoftmax
-    long newHeapSize = applyHeapDelta(state);
-
-    if (newHeapSize > state->heapSoftmax * heapSoftmaxGrowthThresh) {
-      state->heapSoftmax = state->heapSoftmax * heapSoftmaxGrowthFactor;
-    }
-  }
-}
-
-void THCHeapUpdate(THCState *state, long size) {
-  state->heapDelta += size;
-  // batch updates to global heapSize to minimize thread contention
-  if (labs(state->heapDelta) < heapMaxDelta) {
-    return;
-  }
-
-  long newHeapSize = applyHeapDelta(state);
-  if (size > 0) {
-    maybeTriggerGC(state, newHeapSize);
   }
 }
 

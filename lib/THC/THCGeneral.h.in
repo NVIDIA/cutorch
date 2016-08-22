@@ -10,7 +10,6 @@
 #include "cuda.h"
 #include "cuda_runtime.h"
 #include "cublas_v2.h"
-#include "cnmem.h"
 
 #ifdef __cplusplus
 # define THC_EXTERNC extern "C"
@@ -38,14 +37,6 @@
 #endif
 
 struct THCRNGState;  /* Random number generator state. */
-
-typedef enum
-{
-  THC_GPU_MEMORY_POOL_NONE = 0,
-  THC_GPU_MEMORY_POOL_CNMEM = 1
-} THCGPUMemoryPoolMode;
-
-typedef cudaError_t memoryStatus_t;
 
 typedef struct _THCCudaResourcesPerDevice {
   cudaStream_t* streams;
@@ -99,8 +90,10 @@ typedef struct THCState
 
   /* enum determines if we use memory pool */
   int memoryPoolMode;
-  /* how much of GPU memory we are allowed to allocate*/
-  long memoryPoolSizeLimit;
+  /* how much of GPU memory on each GPU we are allowed to allocate */
+  int memoryPoolPercent;
+
+  int verbose;
 
   void (*cutorchGCFunction)(void *data);
   void *cutorchGCData;
@@ -128,6 +121,7 @@ THC_API int THCState_getKernelPeerToPeerAccessEnabled(THCState* state);
 THC_API void THCState_setKernelPeerToPeerAccessEnabled(THCState* state, int val);
 
 THC_API struct cudaDeviceProp* THCState_getCurrentDeviceProperties(THCState* state);
+THCCudaResourcesPerDevice* THCState_getDeviceResourcePtr(THCState *state, int device);
 
 THC_API void THCMagma_init(THCState *state);
 
@@ -163,16 +157,5 @@ THC_API size_t THCState_getDeviceScratchSpaceSize(THCState* state, int device);
 
 THC_API void __THCudaCheck(cudaError_t err, const char *file, const int line);
 THC_API void __THCublasCheck(cublasStatus_t status, const char *file, const int line);
-
-THC_API cudaError_t cnmem2cuda(cnmemStatus_t err);
-
-THC_API memoryStatus_t THCudaMalloc(THCState *state, void **ptr, size_t size);
-THC_API memoryStatus_t THCudaFree(THCState *state, void *ptr);
-THC_API void THCSetGCHandler(THCState *state,
-                             void (*torchGCHandlerFunction)(void *data),
-                             void *data );
-THC_API void THCHeapUpdate(THCState *state, long size);
-
-THC_API void THCudaSetMemoryPoolMode(THCState *state, int mode);
 
 #endif
