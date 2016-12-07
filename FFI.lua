@@ -39,7 +39,7 @@ cudaStream_t THCState_getCurrentStream(THCState *state);
 ]]
 
 local CudaTypes 
-if cutorch.reducedTypeSet
+if cutorch.reducedTypeSet then
    CudaTypes = {
       {'float', ''},
       {'unsigned char', 'Byte'},

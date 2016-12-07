@@ -101,18 +101,26 @@ static int torch_Storage_(copy)(lua_State *L)
     THCStorage_(copy)(state, storage, src);
   else if( (src = luaT_toudata(L, 2, "torch.ByteStorage")) )
     THCStorage_(copyByte)(state, storage, src);
+#ifndef THC_GENERIC_NO_CHAR
   else if( (src = luaT_toudata(L, 2, "torch.CharStorage")) )
     THCStorage_(copyChar)(state, storage, src);
+#endif
+#ifndef THC_GENERIC_NO_SHORT
   else if( (src = luaT_toudata(L, 2, "torch.ShortStorage")) )
     THCStorage_(copyShort)(state, storage, src);
+#endif
+#ifndef THC_GENERIC_NO_INT
   else if( (src = luaT_toudata(L, 2, "torch.IntStorage")) )
     THCStorage_(copyInt)(state, storage, src);
+#endif
   else if( (src = luaT_toudata(L, 2, "torch.LongStorage")) )
     THCStorage_(copyLong)(state, storage, src);
   else if( (src = luaT_toudata(L, 2, "torch.FloatStorage")) )
     THCStorage_(copyFloat)(state, storage, src);
+#ifndef THC_GENERIC_NO_DOUBLE
   else if( (src = luaT_toudata(L, 2, "torch.DoubleStorage")) )
     THCStorage_(copyDouble)(state, storage, src);
+#endif
   else
     luaL_typerror(L, 2, "torch.*Storage");
   lua_settop(L, 1);
