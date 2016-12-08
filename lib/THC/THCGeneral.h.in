@@ -49,6 +49,7 @@
 # define THC_GENERIC_NO_INT
 # define THC_GENERIC_NO_SHORT
 # define THC_GENERIC_NO_DOUBLE
+# define THC_GENERIC_NO_HALF
 #endif
 
 struct THCRNGState;  /* Random number generator state. */
